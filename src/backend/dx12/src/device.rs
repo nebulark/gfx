@@ -38,6 +38,7 @@ use range_alloc::RangeAllocator;
 use root_constants::RootConstant;
 use {
     conv,
+    command as cmd,
     descriptors_cpu,
     native,
     resource as r,
@@ -3360,6 +3361,54 @@ impl d::Device<B> for Device {
             queue.wait_idle()?;
         }
         Ok(())
+    }
+
+    unsafe fn set_image_name(&self, _image: &r::Image, _name: &str) -> Result<(), d::OutOfMemory> {
+        Ok(()) // TODO
+    }
+
+    unsafe fn set_buffer_name(
+        &self,
+        _buffer: &r::Buffer,
+        _name: &str
+    ) -> Result<(), d::OutOfMemory> {
+        Ok(()) // TODO
+    }
+
+    unsafe fn set_command_buffer_name(
+        &self,
+        _command_buffer: &cmd::CommandBuffer,
+        _name: &str
+    ) -> Result<(), d::OutOfMemory> {
+        Ok(()) // TODO
+    }
+
+    unsafe fn set_semaphore_name(
+        &self,
+        _semaphore: &r::Semaphore,
+        _name: &str
+    ) -> Result<(), d::OutOfMemory> {
+        Ok(()) // TODO
+    }
+
+    unsafe fn set_fence_name(&self, _fence: &r::Fence, _name: &str) -> Result<(), d::OutOfMemory> {
+        Ok(()) // TODO
+    }
+
+    unsafe fn set_framebuffer_name(
+        &self,
+        _framebuffer: &r::Framebuffer,
+        _name: &str
+    ) -> Result<(), d::OutOfMemory> {
+        Ok(()) // TODO
+    }
+
+    unsafe fn set_render_pass_name(
+        &self,
+        _render_pass: &r::RenderPass,
+        _name: &str
+    ) -> Result<(), d::OutOfMemory> {
+        Ok(()) // TODO
     }
 }
 

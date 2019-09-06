@@ -243,6 +243,7 @@ pub struct CommandBuffer {
     inner: CommandBufferInnerPtr,
     state: State,
     temp: Temp,
+    pub(crate) name: RefCell<String>,
 }
 
 unsafe impl Send for CommandBuffer {}
@@ -824,7 +825,7 @@ impl EncodePass {
 #[derive(Debug, Default)]
 struct Journal {
     resources: soft::Own,
-    passes: Vec<(soft::Pass, Range<usize>)>,
+    passes: Vec<(soft::Pass, Range<usize>, String)>,
     render_commands: Vec<soft::RenderCommand<soft::Own>>,
     compute_commands: Vec<soft::ComputeCommand<soft::Own>>,
     blit_commands: Vec<soft::BlitCommand>,
@@ -842,23 +843,24 @@ impl Journal {
     fn stop(&mut self) {
         match self.passes.last_mut() {
             None => {}
-            Some(&mut (soft::Pass::Render(_), ref mut range)) => {
+            Some(&mut (soft::Pass::Render(_), ref mut range, _)) => {
                 range.end = self.render_commands.len();
             }
-            Some(&mut (soft::Pass::Compute, ref mut range)) => {
+            Some(&mut (soft::Pass::Compute, ref mut range, _)) => {
                 range.end = self.compute_commands.len();
             }
-            Some(&mut (soft::Pass::Blit, ref mut range)) => {
+            Some(&mut (soft::Pass::Blit, ref mut range, _)) => {
                 range.end = self.blit_commands.len();
             }
         };
     }
 
     fn record(&self, command_buf: &metal::CommandBufferRef) {
-        for (ref pass, ref range) in &self.passes {
+        for (ref pass, ref range, ref label) in &self.passes {
             match *pass {
                 soft::Pass::Render(ref desc) => {
                     let encoder = command_buf.new_render_command_encoder(desc);
+                    encoder.set_label(label);
                     for command in &self.render_commands[range.clone()] {
                         exec_render(&encoder, command, &self.resources);
                     }
@@ -866,6 +868,7 @@ impl Journal {
                 }
                 soft::Pass::Blit => {
                     let encoder = command_buf.new_blit_command_encoder();
+                    encoder.set_label(label);
                     for command in &self.blit_commands[range.clone()] {
                         exec_blit(&encoder, command);
                     }
@@ -873,6 +876,7 @@ impl Journal {
                 }
                 soft::Pass::Compute => {
                     let encoder = command_buf.new_compute_command_encoder();
+                    encoder.set_label(label);
                     for command in &self.compute_commands[range.clone()] {
                         exec_compute(&encoder, command, &self.resources);
                     }
@@ -886,15 +890,15 @@ impl Journal {
         if inherit_pass {
             assert_eq!(other.passes.len(), 1);
             match *self.passes.last_mut().unwrap() {
-                (soft::Pass::Render(_), ref mut range) => {
+                (soft::Pass::Render(_), ref mut range, _) => {
                     range.end += other.render_commands.len();
                 }
-                (soft::Pass::Compute, _) | (soft::Pass::Blit, _) => {
+                (soft::Pass::Compute, _, _) | (soft::Pass::Blit, _, _) => {
                     panic!("Only render passes can inherit")
                 }
             }
         } else {
-            for (ref pass, ref range) in &other.passes {
+            for (pass, range, label) in &other.passes {
                 let offset = match *pass {
                     soft::Pass::Render(_) => self.render_commands.len(),
                     soft::Pass::Compute => self.compute_commands.len(),
@@ -902,7 +906,7 @@ impl Journal {
                 };
                 self.passes
                     .alloc()
-                    .init((pass.clone(), range.start + offset .. range.end + offset));
+                    .init((pass.clone(), range.start + offset .. range.end + offset, label.clone()));
             }
         }
 
@@ -933,11 +937,13 @@ enum CommandSink {
         token: Token,
         encoder_state: EncoderState,
         num_passes: usize,
+        label: String,
     },
     Deferred {
         is_encoding: bool,
         is_inheriting: bool,
         journal: Journal,
+        label: String,
     },
     #[cfg(feature = "dispatch")]
     Remote {
@@ -1037,6 +1043,14 @@ impl<'a> PreCompute<'a> {
 }
 
 impl CommandSink {
+    fn label(&mut self, label: &str) -> &Self {
+        let sink_label = match self {
+            CommandSink::Immediate { label, .. } | CommandSink::Deferred { label, .. } => label,
+        };
+        *sink_label = label.to_string();
+        self
+    }
+
     fn stop_encoding(&mut self) {
         match *self {
             CommandSink::Immediate {
@@ -1082,7 +1096,7 @@ impl CommandSink {
                 ref mut journal,
                 ..
             } => match journal.passes.last() {
-                Some(&(soft::Pass::Render(_), _)) => {
+                Some(&(soft::Pass::Render(_), _, _)) => {
                     PreRender::Deferred(&mut journal.resources, &mut journal.render_commands)
                 }
                 _ => PreRender::Void,
@@ -1106,10 +1120,12 @@ impl CommandSink {
                 ref cmd_buffer,
                 ref mut encoder_state,
                 ref mut num_passes,
+                ref label,
                 ..
             } => {
                 *num_passes += 1;
                 let encoder = cmd_buffer.new_render_command_encoder(&descriptor);
+                encoder.set_label(label);
                 *encoder_state = EncoderState::Render(encoder.to_owned());
                 PreRender::Immediate(encoder)
             }
@@ -1117,12 +1133,15 @@ impl CommandSink {
                 ref mut is_encoding,
                 ref mut journal,
                 is_inheriting,
+                ref label,
+                ..
             } => {
                 assert!(!is_inheriting);
                 *is_encoding = true;
                 journal.passes.alloc().init((
                     soft::Pass::Render(descriptor),
                     journal.render_commands.len() .. 0,
+                    label.clone(),
                 ));
                 PreRender::Deferred(&mut journal.resources, &mut journal.render_commands)
             }
@@ -1194,16 +1213,18 @@ impl CommandSink {
                 ref mut is_encoding,
                 is_inheriting,
                 ref mut journal,
+                ref label,
+                ..
             } => {
                 assert!(!is_inheriting);
                 *is_encoding = true;
-                if let Some(&(soft::Pass::Blit, _)) = journal.passes.last() {
+                if let Some(&(soft::Pass::Blit, _, _)) = journal.passes.last() {
                 } else {
                     journal.stop();
                     journal
                         .passes
                         .alloc()
-                        .init((soft::Pass::Blit, journal.blit_commands.len() .. 0));
+                        .init((soft::Pass::Blit, journal.blit_commands.len() .. 0, label.clone()));
                 }
                 PreBlit::Deferred(&mut journal.blit_commands)
             }
@@ -1257,8 +1278,9 @@ impl CommandSink {
                 is_encoding: true,
                 is_inheriting: false,
                 ref mut journal,
+                ..
             } => match journal.passes.last() {
-                Some(&(soft::Pass::Compute, _)) => {
+                Some(&(soft::Pass::Compute, _, _)) => {
                     PreCompute::Deferred(&mut journal.resources, &mut journal.compute_commands)
                 }
                 _ => PreCompute::Void,
@@ -1296,17 +1318,19 @@ impl CommandSink {
                 ref mut is_encoding,
                 is_inheriting,
                 ref mut journal,
+                ref label,
+                ..
             } => {
                 assert!(!is_inheriting);
                 *is_encoding = true;
-                let switch = if let Some(&(soft::Pass::Compute, _)) = journal.passes.last() {
+                let switch = if let Some(&(soft::Pass::Compute, _, _)) = journal.passes.last() {
                     false
                 } else {
                     journal.stop();
                     journal
                         .passes
                         .alloc()
-                        .init((soft::Pass::Compute, journal.compute_commands.len() .. 0));
+                        .init((soft::Pass::Compute, journal.compute_commands.len() .. 0, label.clone()));
                     true
                 };
                 (
@@ -2399,6 +2423,7 @@ impl hal::pool::CommandPool<Backend> for CommandPool {
                 blit_vertices: FastHashMap::default(),
                 clear_values: Vec::new(),
             },
+            name: RefCell::new(String::new()),
         }
     }
 
@@ -2452,16 +2477,19 @@ impl com::CommandBuffer<Backend> for CommandBuffer {
         let sink = match self.pool_shared.borrow_mut().online_recording {
             OnlineRecording::Immediate if can_immediate => {
                 let (cmd_buffer, token) = self.shared.queue.lock().spawn();
+                cmd_buffer.set_label(&self.name.borrow());
                 CommandSink::Immediate {
                     cmd_buffer,
                     token,
                     encoder_state: EncoderState::None,
                     num_passes: 0,
+                    label: String::new(),
                 }
             }
             #[cfg(feature = "dispatch")]
             OnlineRecording::Remote(_) if can_immediate => {
                 let (cmd_buffer, token) = self.shared.queue.lock().spawn();
+                cmd_buffer.set_label(&self.name);
                 CommandSink::Remote {
                     queue: NoDebug(dispatch::Queue::with_target_queue(
                         "gfx-metal",
@@ -2484,6 +2512,7 @@ impl com::CommandBuffer<Backend> for CommandBuffer {
                 is_encoding: false,
                 is_inheriting: info.subpass.is_some(),
                 journal: inner.backup_journal.take().unwrap_or_default(),
+                label: String::new(),
             },
         };
         inner.sink = Some(sink);
@@ -2509,6 +2538,7 @@ impl com::CommandBuffer<Backend> for CommandBuffer {
                 Some(CommandSink::Deferred {
                     ref mut is_encoding,
                     ref mut journal,
+                    ref label,
                     ..
                 }) => {
                     *is_encoding = true;
@@ -2516,7 +2546,7 @@ impl com::CommandBuffer<Backend> for CommandBuffer {
                     journal
                         .passes
                         .alloc()
-                        .init((soft::Pass::Render(pass_desc), 0 .. 0));
+                        .init((soft::Pass::Render(pass_desc), 0 .. 0, label.clone()));
                 }
                 _ => {
                     warn!("Unexpected inheritance info on a primary command buffer");
@@ -3472,6 +3502,7 @@ impl com::CommandBuffer<Backend> for CommandBuffer {
             });
         }
 
+        self.inner.borrow_mut().sink().label(&render_pass.name.lock());
         self.next_subpass(first_subpass_contents);
     }
 
