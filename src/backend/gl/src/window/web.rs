@@ -12,7 +12,10 @@ struct PixelFormat {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct Window;
+pub struct Window
+{
+    extent : Extent2D,
+}
 
 impl Window {
     fn get_pixel_format(&self) -> PixelFormat {
@@ -27,8 +30,8 @@ impl Window {
 
     pub fn get_window_extent(&self) -> image::Extent {
         image::Extent {
-            width: 640,
-            height: 480,
+            width: self.extent.width,
+            height: self.extent.height,
             depth: 1,
         }
     }
@@ -59,15 +62,18 @@ impl hal::Swapchain<B> for Swapchain {
 }
 
 #[derive(Copy, Clone, Debug)]
-pub struct Surface;
+pub struct Surface
+{
+    window : Window
+}
 
 impl Surface {
-    pub fn from_window(_window: &Window) -> Self {
-        Surface
+    pub fn from_window(window: &Window) -> Self {
+        Surface { window : *window}
     }
 
     fn swapchain_formats(&self) -> Vec<f::Format> {
-        let pixel_format = Window.get_pixel_format();
+        let pixel_format = self.window.get_pixel_format();
         let color_bits = pixel_format.color_bits;
         let alpha_bits = pixel_format.alpha_bits;
         let srgb = pixel_format.srgb;
@@ -90,11 +96,11 @@ impl hal::Surface<B> for Surface {
         Option<Vec<f::Format>>,
         Vec<hal::PresentMode>,
     ) {
-        let ex = Window.get_window_extent();
+        let ex = self.window.get_window_extent();
         let extent = hal::window::Extent2D::from(ex);
 
         let caps = hal::SurfaceCapabilities {
-            image_count: if Window.get_pixel_format().double_buffer {
+            image_count: if self.window.get_pixel_format().double_buffer {
                 2 ..= 2
             } else {
                 1 ..= 1
@@ -120,7 +126,7 @@ impl hal::Surface<B> for Surface {
 impl hal::Instance for Surface {
     type Backend = B;
     fn enumerate_adapters(&self) -> Vec<hal::Adapter<B>> {
-        let adapter = PhysicalDevice::new_adapter((), GlContainer::from_new_canvas()); // TODO: Move to `self` like native/window
+        let adapter = PhysicalDevice::new_adapter((), GlContainer::from_new_canvas(self.window.extent)); // TODO: Move to `self` like native/window
         vec![adapter]
     }
 }

@@ -19,6 +19,7 @@ use std::thread::{self, ThreadId};
 
 use crate::hal::queue::{QueueFamilyId, Queues};
 use crate::hal::{buffer, error, image, memory, pso};
+use crate::hal::window::Extent2D;
 
 pub use self::device::Device;
 pub use self::info::{Info, PlatformName, Version};
@@ -74,7 +75,7 @@ impl GlContainer {
     }
 
     #[cfg(target_arch = "wasm32")]
-    fn from_new_canvas() -> GlContainer {
+    fn from_new_canvas(canvas_extent : Extent2D) -> GlContainer {
         let context = {
             use wasm_bindgen::JsCast;
             let document = web_sys::window()
@@ -87,10 +88,10 @@ impl GlContainer {
                 .expect("Cannot get canvas element");
             // TODO: Remove hardcoded width/height
             canvas
-                .set_attribute("width", "640")
+                .set_attribute("width", canvas_extent.width.to_string().as_ref())
                 .expect("Cannot set width");
             canvas
-                .set_attribute("height", "480")
+                .set_attribute("height", canvas_extent.height.to_string().as_ref())
                 .expect("Cannot set height");
             let context_options = js_sys::Object::new();
             js_sys::Reflect::set(
