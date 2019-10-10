@@ -18,6 +18,11 @@ pub struct Window
 }
 
 impl Window {
+
+	pub fn new_with_extent(extent : Extent2D) -> Window {
+		Window {extent}
+	}
+
     fn get_pixel_format(&self) -> PixelFormat {
         PixelFormat {
             color_bits: 24,
